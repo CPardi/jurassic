@@ -50,9 +50,9 @@ namespace Jurassic.Compiler
 
 
 
-        private static Dictionary<long, WeakReference> generatedMethodCache;
+        public static Dictionary<long, WeakReference> generatedMethodCache { get; set; }
         private static object cacheLock = new object();
-        private static long generatedMethodID;
+        public static long generatedMethodID { get; set; }
         private const int compactGeneratedCacheCount = 100;
 
         /// <summary>
