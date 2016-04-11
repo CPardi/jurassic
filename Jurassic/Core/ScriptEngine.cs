@@ -681,7 +681,11 @@ namespace Jurassic
         internal class ReflectionEmitModuleInfo
         {
             public System.Reflection.Emit.AssemblyBuilder AssemblyBuilder;
-            public System.Reflection.Emit.ModuleBuilder ModuleBuilder;
+
+            public System.Reflection.Emit.ModuleBuilder ModuleBuilder
+            {
+                get; set;
+            }
             public int TypeCount;
         }
 

@@ -51,7 +51,11 @@ namespace Jurassic.Compiler
 
 
         public static Dictionary<long, WeakReference> generatedMethodCache { get; set; }
+
+        public static Dictionary<GeneratedMethod, long> inverseCache { get; set; } = new Dictionary<GeneratedMethod, long>();
+        public static long[] idCache { get; set; } = {};
         private static object cacheLock = new object();
+
         public static long generatedMethodID { get; set; }
         private const int compactGeneratedCacheCount = 100;
 
@@ -93,8 +97,7 @@ namespace Jurassic.Compiler
 
                 // Create a weak reference to the generated method and add it to the cache.
                 long id = generatedMethodID;
-                var weakReference = new WeakReference(generatedMethod);
-                generatedMethodCache.Add(id, weakReference);
+                AddToMethodCache(id, generatedMethod);
 
                 // Increment the ID for next time.
                 generatedMethodID++;
@@ -115,6 +118,26 @@ namespace Jurassic.Compiler
                 // Return the ID that was allocated.
                 return id;
             }
+        }
+
+        public static void AddToMethodCache(long id, GeneratedMethod generatedMethod)
+        {
+            inverseCache.Add(generatedMethod, id);
+            var weakReference = new WeakReference(generatedMethod);
+            generatedMethodCache.Add(id, weakReference);
+
+            if (generatedMethod.Dependencies == null)
+            {
+                return;
+            }
+            
+            var dependancyList = new List<long>();
+            foreach (var method in generatedMethod.Dependencies)
+            {
+                dependancyList.Add(inverseCache[generatedMethod]);
+            }
+
+            idCache = dependancyList.ToArray();
         }
     }
 }

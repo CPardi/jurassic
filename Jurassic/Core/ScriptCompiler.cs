@@ -5,6 +5,7 @@ using System.Text;
 
 namespace Jurassic
 {
+    using System.Diagnostics;
     using System.IO;
     using System.Reflection;
     using System.Reflection.Emit;
@@ -13,18 +14,8 @@ namespace Jurassic
 
     public class ScriptCompiler
     {
-        private ScriptEngine _engine;
-
         private List<string> codesInputs = new List<string>();
-
-        public ScriptCompiler()
-        {
-            _engine = new ScriptEngine
-            {
-                EnableDebugging = true 
-            };
-        }
-
+        
         public void IncludeInput(string code)
         {
             codesInputs.Add(code);
@@ -42,60 +33,156 @@ namespace Jurassic
                     Path.GetDirectoryName(fullpath));
 
             var module = assemblyBuilder.DefineDynamicModule("Module", Path.GetFileName(fullpath), true);
-            _engine.ReflectionEmitInfo = new ScriptEngine.ReflectionEmitModuleInfo() { AssemblyBuilder = assemblyBuilder, ModuleBuilder = module };
-            
+
+            var engine = new ScriptEngine
+            {
+                EnableDebugging = true,
+                ReflectionEmitInfo = new ScriptEngine.ReflectionEmitModuleInfo() { AssemblyBuilder = assemblyBuilder, ModuleBuilder = module }
+            };
+
+
             foreach (var code in codesInputs)
             {
-                _engine.Execute(code);
+                engine.Execute(code);
             }
 
-            //var userType = module.DefineType(assemblyName, TypeAttributes.Public);
-            //var restoreMethod = userType.DefineMethod("RestoreScriptEngine", MethodAttributes.Public | MethodAttributes.Static, typeof(ScriptEngine), new Type[] { });
-            //var restoreMethodBody = restoreMethod.GetILGenerator();
+            var generatedTypes = module.GetTypes();
+            var userType = module.DefineType(assemblyName, TypeAttributes.Public);
+            var restoreMethod = userType.DefineMethod("RestoreScriptEngine", MethodAttributes.Public | MethodAttributes.Static, typeof(ScriptEngine), new Type[] { });
+            var restoreMethodBody = restoreMethod.GetILGenerator();
 
-            //// Argument : ScriptEngine
-            //restoreMethodBody.Emit(OpCodes.Newobj, typeof(ScriptEngine).GetConstructor(new Type[] { }));
+            var generator = new ReflectionEmitILGenerator(restoreMethodBody);
 
-            //// Argument : ObjectScope
-            //restoreMethodBody.Emit(OpCodes.Ldnull);
-            //restoreMethodBody.Emit(OpCodes.Ldnull);
-            //restoreMethodBody.EmitCall(OpCodes.Callvirt, typeof(ScriptEngine).GetMethod("get_Global"), new Type[] { });
-            //restoreMethodBody.Emit(OpCodes.Ldc_I4_0);
-            //restoreMethodBody.Emit(OpCodes.Ldc_I4_0);
-            //restoreMethodBody.EmitCall(OpCodes.Call, typeof(ObjectScope).GetMethod("CreateRuntimeScope"), new Type[] { });
-
-            //// Argument: obj
-            //restoreMethodBody.EmitCall(OpCodes.Callvirt, typeof(ScriptEngine).GetMethod("get_Global"), new Type[] { });
-
-            //restoreMethodBody.EmitCall(OpCodes.Call, module.GetType("JavaScriptClass0").GetMethod("global_"), new Type[] { });
-            //restoreMethodBody.Emit(OpCodes.Ret);
-            //userType.CreateType();
+            // Local : engine = new ScriptEngine()
+            var loadedEngine = restoreMethodBody.DeclareLocal(typeof(ScriptEngine));
+            restoreMethodBody.EmitCall(OpCodes.Call, typeof(Assembly).GetMethod(nameof(Assembly.GetExecutingAssembly)), new Type[] { });
+            restoreMethodBody.EmitCall(OpCodes.Call, typeof(ScriptCompiler).GetMethod("Load"), new Type[] { });
+            restoreMethodBody.Emit(OpCodes.Ret);
+            userType.CreateType();
 
             assemblyBuilder.Save(Path.GetFileName(dllPath));
         }
 
-        public ScriptEngine Load(Func<ScriptEngine, Scope, object, object>[] globals, FunctionDelegate[] anonymousDelegates)
+        public static void AddToFunctionCache(long id, FunctionDelegate functionDelegate, GeneratedMethod[] dependencies)
+        {
+            GeneratedMethod.AddToMethodCache(id, new GeneratedMethod(functionDelegate, dependencies));
+        }
+
+        public static ScriptEngine Load(Assembly assembly)
         {
             var engine = new ScriptEngine();
-            GeneratedMethod.generatedMethodCache = new Dictionary<long, WeakReference>();
+            var globalScope = /*engine.CreateGlobalScope();*/
+            Jurassic.Compiler.ObjectScope.CreateRuntimeScope(null, engine.Global, false, false);
+
+            var sw = new Stopwatch();
+
+            sw.Start();
+
+            var methods = assembly
+                .GetTypes()
+                .Where(t => t.GetMethods().Any(IsJavaScriptFunction))
+                .Select(t =>
+                {
+                    return 
+                    new
+                    {
+                        Id = (long)t.GetMethod("GetFunctionId").Invoke(null, new object[] { }),
+                        Function = t.GetMethods().SingleOrDefault(IsJavaScriptFunction),
+                        Dependencies = (long[])t.GetMethod("GetDependencyIds").Invoke(null, new object[] { })
+                    };
+                }
+                ).ToList();
+
 
             GeneratedMethod.generatedMethodID = 0;
-            foreach (var func in anonymousDelegates)
+            GeneratedMethod.generatedMethodCache = new Dictionary<long, WeakReference>();
+            int i = 0;
+
+            while (methods.Count != 0)
             {
-                GeneratedMethod.generatedMethodCache.Add(GeneratedMethod.generatedMethodID, new WeakReference(new GeneratedMethod(func, null)));
-                GeneratedMethod.generatedMethodID++;
+                bool foundDependency = true;
+                var func = methods[i];
+
+                var functionDelegate = (FunctionDelegate)Delegate.CreateDelegate(typeof(FunctionDelegate), func.Function);
+
+                List<GeneratedMethod> dependencies = new List<GeneratedMethod>();
+                foreach (var m in func.Dependencies)
+                {
+                    WeakReference refer;
+                    foundDependency = GeneratedMethod.generatedMethodCache.TryGetValue(m, out refer);
+
+                    if (!foundDependency)
+                    {
+                        break;
+                    }
+
+                    dependencies.Add((GeneratedMethod)refer.Target);
+                }
+
+                if (foundDependency)
+                {
+                    AddToFunctionCache(func.Id, functionDelegate, dependencies.ToArray());
+                    GeneratedMethod.generatedMethodID++;
+                    methods.Remove(func);
+                    i = 0;
+                }
+                else
+                {
+                    i = i < methods.Count - 1 ? i + 1 : 0;
+                }
             }
 
-            var globalScope = Jurassic.Compiler.ObjectScope.CreateRuntimeScope(null, engine.Global, false, false);
+            Console.WriteLine("Functions" + sw.ElapsedMilliseconds / 1000.0);
+            
+            
 
+            var globals = assembly
+                .GetTypes()
+                .SelectMany(t => t.GetMethods())
+                .Where(m => m.Name == "global_")
+                .Select(m => (Func<ScriptEngine, Scope, object, object>)Delegate.CreateDelegate(typeof(Func<ScriptEngine, Scope, object, object>), m))
+                .ToList();
 
+            sw.Reset();
+            sw.Start();
             object obj = engine.Global;
             foreach (var global in globals)
             {
                 global(engine, globalScope, obj);
             }
-            
+
+            Console.WriteLine("globals: " + sw.ElapsedMilliseconds / 1000.0);
+
             return engine;
+        }
+
+        public static bool IsJavaScriptFunction(MethodInfo info)
+        {
+            if (info == null)
+            {
+                return false;
+            }
+
+            if (info.ReturnParameter?.ParameterType != typeof(object))
+            {
+                return false;
+            }
+
+                var parameters = info.GetParameters();
+
+            if (parameters.Length != 5)
+            {
+                return false;
+            }
+
+            var result = true;
+            result |= parameters[0].ParameterType == typeof(ScriptEngine);
+            result |= parameters[1].ParameterType == typeof(Scope);
+            result |= parameters[1].ParameterType == typeof(object);
+            result |= parameters[1].ParameterType == typeof(FunctionInstance);
+            result |= parameters[1].ParameterType == typeof(object[]);
+
+            return result;
         }
     }
 }

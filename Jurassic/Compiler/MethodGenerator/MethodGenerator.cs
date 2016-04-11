@@ -292,6 +292,35 @@ namespace Jurassic.Compiler
                 GenerateCode(generator, optimizationInfo);
                 generator.Complete();
 
+                // Add method id to type.
+                var mdGetId = typeBuilder.DefineMethod("GetFunctionId", System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static, typeof(long), new Type[] { });
+                var genGetId = new ReflectionEmitILGenerator(mdGetId.GetILGenerator());
+                genGetId.LoadInt64(GeneratedMethod.generatedMethodID);
+                genGetId.Return();
+
+                var dependGetId = typeBuilder.DefineMethod("GetDependencyIds", System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static, typeof(long[]), new Type[] { });
+                var gendependGetId = new ReflectionEmitILGenerator(dependGetId.GetILGenerator());
+
+                var arr = gendependGetId.CreateTemporaryVariable(typeof(long[]));
+                gendependGetId.LoadInt32(GeneratedMethod.idCache.Length);
+                
+                gendependGetId.NewArray(typeof(long));
+                gendependGetId.StoreVariable(arr);
+
+                var i = 0;
+                foreach (var depend in GeneratedMethod.idCache)
+                {
+                    gendependGetId.LoadVariable(arr);
+                    gendependGetId.LoadInt32(i);
+                    gendependGetId.LoadInt64(depend);
+                    gendependGetId.StoreArrayElement(typeof(long));
+                    i++;
+                }
+
+                gendependGetId.LoadVariable(arr);
+                gendependGetId.Return();
+                
+
                 // Bake it.
                 var type = typeBuilder.CreateType();
                 var methodInfo = type.GetMethod(this.GetMethodName());
